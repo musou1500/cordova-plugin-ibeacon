@@ -1148,13 +1148,16 @@ public class LocationManager extends CordovaPlugin implements BeaconConsumer {
             public PluginResult run() {
                 try {
                     Region region = parseRegion(arguments);
+                    Identifier id1 = region.getId1();
+                    Identifier id2 = region.getId2();
+                    Identifier id3 = region.getId3();
                     // Company Identifiers
                     // https://www.bluetooth.com/specifications/assigned-numbers/company-identifiers
                     // 0x004C Apple, inc.
                     Beacon beacon = new Beacon.Builder()
-                        .setId1(region.getId1().toString())
-                        .setId2(region.getId2().toString())
-                        .setId3(region.getId3().toString())
+                        .setId1((id1 == null) ? null : id1.toString())
+                        .setId2((id2 == null) ? null : id2.toString())
+                        .setId3((id3 == null) ? null : id3.toString())
                         .setManufacturer(0x004C)
                         .setTxPower(-56)
                         .build();
