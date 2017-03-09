@@ -44,5 +44,10 @@ public interface IBeaconServiceNotifier {
      * Most likely when Bluetooth aerial is switched on or off
      */
     public void didChangeAuthorizationStatus(String status);
+
+    /*
+     * notified when advertising is successfully started
+     */
+    public void peripheralManagerDidStartAdvertising(Region region);
 }
 

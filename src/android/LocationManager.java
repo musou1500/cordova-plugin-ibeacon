@@ -25,6 +25,8 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothManager;
+import android.bluetooth.le.AdvertiseCallback;
+import android.bluetooth.le.AdvertiseSettings;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.DialogInterface;
@@ -42,6 +44,7 @@ import org.altbeacon.beacon.Beacon;
 import org.altbeacon.beacon.BeaconConsumer;
 import org.altbeacon.beacon.BeaconManager;
 import org.altbeacon.beacon.BeaconParser;
+import org.altbeacon.beacon.BeaconTransmitter;
 import org.altbeacon.beacon.BleNotAvailableException;
 import org.altbeacon.beacon.Identifier;
 import org.altbeacon.beacon.MonitorNotifier;
@@ -59,10 +62,12 @@ import org.json.JSONObject;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.security.InvalidKeyException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.List;
 
 @TargetApi(Build.VERSION_CODES.JELLY_BEAN)
 public class LocationManager extends CordovaPlugin implements BeaconConsumer {
@@ -75,6 +80,7 @@ public class LocationManager extends CordovaPlugin implements BeaconConsumer {
     private static final int BUILD_VERSION_CODES_M = 23;
 
     private BeaconManager iBeaconManager;
+    private BeaconTransmitter beaconTransmitter;
     private BlockingQueue<Runnable> queue;
     private PausableThreadPoolExecutor threadPoolExecutor;
 
@@ -217,8 +223,12 @@ public class LocationManager extends CordovaPlugin implements BeaconConsumer {
     ///////////////// SETUP AND VALIDATION /////////////////////////////////
 
     private void initLocationManager() {
-        iBeaconManager.getBeaconParsers().add(new BeaconParser().setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24"));
+        BeaconParser beaconParser = new BeaconParser();
+        beaconParser.setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24");
+        iBeaconManager.getBeaconParsers().add(beaconParser);
         iBeaconManager.bind(this);
+
+        beaconTransmitter = new BeaconTransmitter(getApplicationContext(), beaconParser);
     }
 
     @TargetApi(BUILD_VERSION_CODES_M)
@@ -602,6 +612,28 @@ public class LocationManager extends CordovaPlugin implements BeaconConsumer {
 
                         } catch (Exception e) {
                             callbackContext.error("didChangeAuthorizationStatus error: " + e.getMessage());
+                        }
+                    }
+                });
+            }
+            @Override
+            public void peripheralManagerDidStartAdvertising(final Region region) {
+                threadPoolExecutor.execute(new Runnable() {
+                    public void run() {
+
+                        try {
+                            JSONObject data = new JSONObject();
+                            data.put("eventType", "peripheralManagerDidStartAdvertising");
+                            data.put("beacon", mapOfRegion(region));
+
+                            //send and keep reference to callback
+                            PluginResult result = new PluginResult(PluginResult.Status.OK, data);
+                            result.setKeepCallback(true);
+                            callbackContext.sendPluginResult(result);
+
+                        } catch (Exception e) {
+                            // Delegate to handle advertising error have not implemented yet
+                            Log.e(TAG, "'peripheralManagerDidStartAdvertising' exception " + e.getCause());
                         }
                     }
                 });
@@ -1087,12 +1119,10 @@ public class LocationManager extends CordovaPlugin implements BeaconConsumer {
         _handleCallSafely(callbackContext, new ILocationManagerCommand() {
             @Override
             public PluginResult run() {
-
-                //not supported at Android yet (see Android L)
-                PluginResult result = new PluginResult(PluginResult.Status.OK, false);
+                int returnCode = BeaconTransmitter.checkTransmissionSupported(getApplicationContext());
+                PluginResult result = new PluginResult(PluginResult.Status.OK, (returnCode == BeaconTransmitter.SUPPORTED));
                 result.setKeepCallback(true);
                 return result;
-
             }
         });
 
@@ -1103,30 +1133,53 @@ public class LocationManager extends CordovaPlugin implements BeaconConsumer {
         _handleCallSafely(callbackContext, new ILocationManagerCommand() {
             @Override
             public PluginResult run() {
-
-                //not supported on Android
-                PluginResult result = new PluginResult(PluginResult.Status.OK, false);
+                boolean started = beaconTransmitter.isStarted();
+                PluginResult result = new PluginResult(PluginResult.Status.OK, started);
                 result.setKeepCallback(true);
                 return result;
-
             }
         });
 
     }
 
-    private void startAdvertising(JSONObject arguments, CallbackContext callbackContext) {
-
+    private void startAdvertising(final JSONObject arguments, CallbackContext callbackContext) {
         _handleCallSafely(callbackContext, new ILocationManagerCommand() {
             @Override
             public PluginResult run() {
+                try {
+                    Region region = parseRegion(arguments);
+                    // Company Identifiers
+                    // https://www.bluetooth.com/specifications/assigned-numbers/company-identifiers
+                    // 0x004C Apple, inc.
+                    Beacon beacon = new Beacon.Builder()
+                        .setId1(region.getId1().toString())
+                        .setId2(region.getId2().toString())
+                        .setId3(region.getId3().toString())
+                        .setManufacturer(0x004C)
+                        .setTxPower(-56)
+                        .build();
 
-                //not supported on Android
-                PluginResult result = new PluginResult(PluginResult.Status.ERROR, "iBeacon Advertising is not supported on Android");
-                result.setKeepCallback(true);
-                return result;
+                    beaconTransmitter.startAdvertising(beacon, new AdvertiseCallback() {
+                        @Override
+                        public void onStartFailure(int errorCode) {
+                            debugWarn("startAdvertising failed with code: "+errorCode);
+                        }
+
+                        @Override
+                        public void onStartSuccess(AdvertiseSettings settingsInEffect) {
+                            debugWarn("startAdvertising start succeeded.");
+                        }
+                    });
+                    PluginResult result = new PluginResult(PluginResult.Status.OK);
+                    result.setKeepCallback(true);
+                    beaconServiceNotifier.peripheralManagerDidStartAdvertising(region);
+                    return result;
+                } catch (Exception e) {
+                    Log.e(TAG, "'startAdvertising' exception " + e.getMessage());
+                    return new PluginResult(PluginResult.Status.ERROR, e.getMessage());
+                }
             }
         });
-
     }
 
     private void stopAdvertising(CallbackContext callbackContext) {
@@ -1134,12 +1187,10 @@ public class LocationManager extends CordovaPlugin implements BeaconConsumer {
         _handleCallSafely(callbackContext, new ILocationManagerCommand() {
             @Override
             public PluginResult run() {
-
-                //not supported on Android
-                PluginResult result = new PluginResult(PluginResult.Status.ERROR, "iBeacon Advertising is not supported on Android");
+                beaconTransmitter.stopAdvertising();
+                PluginResult result = new PluginResult(PluginResult.Status.OK);
                 result.setKeepCallback(true);
                 return result;
-
             }
         });
     }
